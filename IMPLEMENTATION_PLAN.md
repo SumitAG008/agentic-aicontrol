@@ -32,7 +32,126 @@ This document outlines the comprehensive implementation plan for a sophisticated
 
 ---
 
-## 2. Design System Tokens
+## 2. System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         AI AGENT CONTROL ROOM                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        UI LAYER (Next.js)                           │   │
+│  ├─────────────────┬─────────────────┬─────────────────────────────────┤   │
+│  │  Agent Studio   │   Monitoring    │      Config Manager             │   │
+│  │   (No-Code)     │   Dashboard     │                                 │   │
+│  │                 │                 │  - Agent Settings               │   │
+│  │  - NL Builder   │  - KPI Widgets  │  - Tool Configuration           │   │
+│  │  - Visual Flow  │  - Agent Grid   │  - Domain Pack Manager          │   │
+│  │  - Templates    │  - Activity Feed│  - Tenant Settings              │   │
+│  │  - Preview/Test │  - Run Viewer   │  - Security & Compliance        │   │
+│  └─────────────────┴─────────────────┴─────────────────────────────────┘   │
+│                                  │                                          │
+│                                  ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     ORCHESTRATION LAYER                             │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                     │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌───────────┐  │   │
+│  │  │   Agent     │  │  Workflow   │  │    Tool     │  │  Memory   │  │   │
+│  │  │   Router    │  │   Engine    │  │  Registry   │  │  Manager  │  │   │
+│  │  │             │  │             │  │             │  │           │  │   │
+│  │  │ - Dispatch  │  │ - DAG Exec  │  │ - Tool CRUD │  │ - Short   │  │   │
+│  │  │ - Load Bal  │  │ - Branching │  │ - Auth Mgmt │  │ - Long    │  │   │
+│  │  │ - Priority  │  │ - Retry     │  │ - Rate Limit│  │ - Vector  │  │   │
+│  │  │ - Failover  │  │ - Timeouts  │  │ - Webhooks  │  │ - Context │  │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └───────────┘  │   │
+│  │                                                                     │   │
+│  │  ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │  │                    Event Bus (Redis/Kafka)                  │   │   │
+│  │  │  - Agent Events  - Run Events  - System Events  - Webhooks  │   │   │
+│  │  └─────────────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                  │                                          │
+│                                  ▼                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                   MULTI-TENANT DATA LAYER                           │   │
+│  ├─────────────────────────────────────────────────────────────────────┤   │
+│  │                                                                     │   │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌───────────┐  │   │
+│  │  │  Tenant A   │  │  Tenant B   │  │  Tenant C   │  │ Tenant N  │  │   │
+│  │  │  (Isolated) │  │  (Isolated) │  │  (Isolated) │  │ (Isolated)│  │   │
+│  │  │             │  │             │  │             │  │           │  │   │
+│  │  │ - Agents    │  │ - Agents    │  │ - Agents    │  │ - Agents  │  │   │
+│  │  │ - Runs      │  │ - Runs      │  │ - Runs      │  │ - Runs    │  │   │
+│  │  │ - Tools     │  │ - Tools     │  │ - Tools     │  │ - Tools   │  │   │
+│  │  │ - Logs      │  │ - Logs      │  │ - Logs      │  │ - Logs    │  │   │
+│  │  │ - Settings  │  │ - Settings  │  │ - Settings  │  │ - Settings│  │   │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘  └───────────┘  │   │
+│  │                                                                     │   │
+│  │  ┌─────────────────────────────────────────────────────────────┐   │   │
+│  │  │              Shared Platform Services                       │   │   │
+│  │  │  - Domain Packs  - System Config  - Billing  - Analytics   │   │   │
+│  │  └─────────────────────────────────────────────────────────────┘   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Layer Responsibilities
+
+#### UI Layer
+| Component | Purpose | Key Features |
+|-----------|---------|--------------|
+| **Agent Studio** | No-code agent creation | NL input, visual workflow builder, template library |
+| **Monitoring Dashboard** | Real-time observability | KPI metrics, agent status grid, activity feed, run viewer |
+| **Config Manager** | System administration | Agent settings, tool config, tenant management, security |
+
+#### Orchestration Layer
+| Component | Purpose | Key Features |
+|-----------|---------|--------------|
+| **Agent Router** | Request distribution | Load balancing, priority queuing, failover handling |
+| **Workflow Engine** | Execution management | DAG execution, branching logic, retry policies, timeouts |
+| **Tool Registry** | Integration hub | Tool CRUD, authentication management, rate limiting |
+| **Memory Manager** | Context persistence | Short-term cache, long-term storage, vector embeddings |
+| **Event Bus** | Async communication | Agent events, run status, webhooks, real-time updates |
+
+#### Multi-Tenant Data Layer
+| Component | Purpose | Key Features |
+|-----------|---------|--------------|
+| **Tenant Isolation** | Data separation | Row-level security, schema isolation, encrypted at rest |
+| **Shared Services** | Platform features | Domain packs, system config, billing, analytics |
+
+### Data Flow
+
+```
+User Request → Agent Router → Workflow Engine → Tool Execution → Memory Update
+                    ↓              ↓                  ↓               ↓
+              Event Bus ←──────────────────────────────────────────────
+                    ↓
+              UI Updates (WebSocket)
+```
+
+### Tenant Isolation Strategy
+
+```typescript
+// Row-Level Security Pattern
+interface TenantContext {
+  tenantId: string;
+  userId: string;
+  permissions: Permission[];
+}
+
+// All queries automatically scoped
+const getAgents = (ctx: TenantContext) => {
+  return prisma.agent.findMany({
+    where: { tenantId: ctx.tenantId }
+  });
+};
+```
+
+---
+
+## 3. Design System Tokens
 
 ### Color Palette (CSS Variables)
 
