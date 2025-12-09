@@ -1,67 +1,169 @@
+// Run Routes - Execution tracking and management
 import { Router } from 'express';
+import { runService } from '../services';
+import { authenticate, mockAuth } from '../middleware/auth';
+import { validateBody, validateQuery, validateParams } from '../middleware/validate';
+import { CreateRunSchema, RunFiltersSchema, IdParamSchema } from '../lib/validators';
 
 const router = Router();
 
-const mockRuns = [
-  { id: '1', agentId: '1', agentName: 'HR Assistant', status: 'completed', trigger: 'manual', duration: 2340, tokensUsed: 1560, createdAt: new Date().toISOString() },
-  { id: '2', agentId: '2', agentName: 'Data Analyst', status: 'running', trigger: 'scheduled', duration: null, tokensUsed: 890, createdAt: new Date().toISOString() },
-];
+// Use mock auth in development
+if (process.env.NODE_ENV === 'development') {
+  router.use(mockAuth);
+}
 
-// GET /api/runs - List all runs
-router.get('/', (req, res) => {
-  const { agentId, status, limit = 50, offset = 0 } = req.query;
-  let runs = [...mockRuns];
+router.use(authenticate);
 
-  if (agentId) {
-    runs = runs.filter(r => r.agentId === agentId);
+// GET /api/runs - List runs with filters
+router.get('/', validateQuery(RunFiltersSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const result = await runService.list(req.context, req.query as any);
+    res.json(result);
+  } catch (error) {
+    next(error);
   }
-  if (status) {
-    runs = runs.filter(r => r.status === status);
+});
+
+// GET /api/runs/recent - Get recent runs
+router.get('/recent', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const limit = parseInt(req.query.limit as string) || 10;
+    const runs = await runService.getRecent(req.context, limit);
+    res.json(runs);
+  } catch (error) {
+    next(error);
   }
+});
 
-  const total = runs.length;
-  runs = runs.slice(Number(offset), Number(offset) + Number(limit));
+// GET /api/runs/stats - Get run statistics
+router.get('/stats', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
 
-  res.json({ runs, total, limit: Number(limit), offset: Number(offset) });
+    const period = (req.query.period as 'day' | 'week' | 'month') || 'day';
+    const stats = await runService.getStats(req.context, period);
+    res.json(stats);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/runs/today-count - Get today's run count
+router.get('/today-count', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const count = await runService.getTodayCount(req.context);
+    res.json({ count });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // GET /api/runs/:id - Get single run
-router.get('/:id', (req, res) => {
-  const run = mockRuns.find(r => r.id === req.params.id);
-  if (!run) {
-    return res.status(404).json({ error: 'Run not found' });
+router.get('/:id', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const run = await runService.getById(req.context, req.params.id);
+
+    if (!run) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Run not found',
+        },
+      });
+    }
+
+    res.json(run);
+  } catch (error) {
+    next(error);
   }
-  res.json(run);
 });
 
-// GET /api/runs/:id/steps - Get run execution steps
-router.get('/:id/steps', (req, res) => {
-  const run = mockRuns.find(r => r.id === req.params.id);
-  if (!run) {
-    return res.status(404).json({ error: 'Run not found' });
+// GET /api/runs/:id/steps - Get execution steps
+router.get('/:id/steps', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const steps = await runService.getSteps(req.context, req.params.id);
+
+    if (!steps) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Run not found',
+        },
+      });
+    }
+
+    res.json(steps);
+  } catch (error) {
+    next(error);
   }
+});
 
-  const steps = [
-    { id: '1', sequence: 1, type: 'thought', content: 'Analyzing the request...', timestamp: new Date().toISOString() },
-    { id: '2', sequence: 2, type: 'tool_call', content: 'Calling Slack API', toolId: 'slack', timestamp: new Date().toISOString() },
-    { id: '3', sequence: 3, type: 'tool_result', content: 'Retrieved 5 messages', timestamp: new Date().toISOString() },
-    { id: '4', sequence: 4, type: 'message', content: 'Task completed successfully', timestamp: new Date().toISOString() },
-  ];
+// POST /api/runs - Create a new run (trigger agent execution)
+router.post('/', validateBody(CreateRunSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
 
-  res.json({ steps, runId: req.params.id });
+    const run = await runService.create(req.context, req.body);
+    res.status(201).json(run);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Agent not found') {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Agent not found',
+        },
+      });
+    }
+    next(error);
+  }
 });
 
 // POST /api/runs/:id/cancel - Cancel a run
-router.post('/:id/cancel', (req, res) => {
-  const run = mockRuns.find(r => r.id === req.params.id);
-  if (!run) {
-    return res.status(404).json({ error: 'Run not found' });
+router.post('/:id/cancel', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const run = await runService.cancel(req.context, req.params.id);
+
+    if (!run) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Run not found or cannot be cancelled',
+        },
+      });
+    }
+
+    res.json(run);
+  } catch (error) {
+    next(error);
   }
-  if (run.status !== 'running' && run.status !== 'pending') {
-    return res.status(400).json({ error: 'Can only cancel running or pending runs' });
-  }
-  run.status = 'cancelled';
-  res.json(run);
 });
 
 export { router as runRoutes };

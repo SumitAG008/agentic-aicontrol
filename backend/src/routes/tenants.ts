@@ -1,74 +1,188 @@
+// Tenant Routes - Multi-tenant management
 import { Router } from 'express';
+import { tenantService } from '../services';
+import { authenticate, mockAuth, requireRole } from '../middleware/auth';
+import { validateBody, validateParams } from '../middleware/validate';
+import { UpdateTenantSchema, IdParamSchema } from '../lib/validators';
 
 const router = Router();
 
-const mockTenants = [
-  {
-    id: 'tenant-1',
-    name: 'Acme Corp',
-    slug: 'acme-corp',
-    plan: 'enterprise',
-    settings: {
-      theme: 'dark',
-      timezone: 'America/New_York',
-    },
-    limits: {
-      maxAgents: 50,
-      maxUsers: 100,
-      maxExecutionsPerMonth: 100000,
-    },
-    createdAt: new Date('2024-01-01').toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
+// Use mock auth in development
+if (process.env.NODE_ENV === 'development') {
+  router.use(mockAuth);
+}
 
-// GET /api/tenants - List tenants (admin only)
-router.get('/', (req, res) => {
-  res.json({ tenants: mockTenants, total: mockTenants.length });
+router.use(authenticate);
+
+// GET /api/tenants/current - Get current tenant
+router.get('/current', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const tenant = await tenantService.getById(req.context.tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Tenant not found',
+        },
+      });
+    }
+
+    res.json(tenant);
+  } catch (error) {
+    next(error);
+  }
 });
 
-// GET /api/tenants/:id - Get tenant
-router.get('/:id', (req, res) => {
-  const tenant = mockTenants.find(t => t.id === req.params.id);
-  if (!tenant) {
-    return res.status(404).json({ error: 'Tenant not found' });
+// GET /api/tenants/current/usage - Get current tenant usage stats
+router.get('/current/usage', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const usage = await tenantService.getUsage(req.context.tenantId);
+    res.json(usage);
+  } catch (error) {
+    next(error);
   }
-  res.json(tenant);
 });
 
-// PUT /api/tenants/:id - Update tenant
-router.put('/:id', (req, res) => {
-  const index = mockTenants.findIndex(t => t.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Tenant not found' });
+// GET /api/tenants/current/limits - Check current tenant limits
+router.get('/current/limits', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const tenant = await tenantService.getById(req.context.tenantId);
+    const usage = await tenantService.getUsage(req.context.tenantId);
+
+    if (!tenant) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Tenant not found',
+        },
+      });
+    }
+
+    res.json({
+      limits: tenant.limits,
+      usage: {
+        agents: usage.agentsCount,
+        users: usage.usersCount,
+        executions: usage.executionsThisMonth,
+      },
+    });
+  } catch (error) {
+    next(error);
   }
-  mockTenants[index] = {
-    ...mockTenants[index],
-    ...req.body,
-    updatedAt: new Date().toISOString(),
-  };
-  res.json(mockTenants[index]);
 });
 
-// GET /api/tenants/:id/usage - Get tenant usage stats
-router.get('/:id/usage', (req, res) => {
-  const tenant = mockTenants.find(t => t.id === req.params.id);
-  if (!tenant) {
-    return res.status(404).json({ error: 'Tenant not found' });
-  }
+// PUT /api/tenants/current - Update current tenant (admin only)
+router.put(
+  '/current',
+  requireRole('OWNER', 'ADMIN'),
+  validateBody(UpdateTenantSchema),
+  async (req, res, next) => {
+    try {
+      if (!req.context) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
 
-  res.json({
-    tenantId: req.params.id,
-    period: 'current_month',
-    usage: {
-      agents: 12,
-      users: 25,
-      executions: 45230,
-      tokensUsed: 2340000,
-      storageGB: 5.2,
-    },
-    limits: tenant.limits,
-  });
+      const tenant = await tenantService.update(req.context.tenantId, req.body);
+
+      if (!tenant) {
+        return res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Tenant not found',
+          },
+        });
+      }
+
+      res.json(tenant);
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// GET /api/tenants - List all tenants (super admin only - for future use)
+router.get('/', async (req, res, next) => {
+  try {
+    // In production, this would require super admin role
+    const page = parseInt(req.query.page as string) || 1;
+    const pageSize = parseInt(req.query.pageSize as string) || 20;
+
+    const result = await tenantService.list(page, pageSize);
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/tenants/:id - Get tenant by ID
+router.get('/:id', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Only allow accessing own tenant (or super admin in future)
+    if (req.params.id !== req.context.tenantId) {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Cannot access other tenant data',
+        },
+      });
+    }
+
+    const tenant = await tenantService.getById(req.params.id);
+
+    if (!tenant) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Tenant not found',
+        },
+      });
+    }
+
+    res.json(tenant);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/tenants/:id/usage - Get tenant usage (backward compatibility)
+router.get('/:id/usage', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    // Only allow accessing own tenant
+    if (req.params.id !== req.context.tenantId) {
+      return res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Cannot access other tenant data',
+        },
+      });
+    }
+
+    const usage = await tenantService.getUsage(req.params.id);
+    res.json(usage);
+  } catch (error) {
+    next(error);
+  }
 });
 
 export { router as tenantRoutes };

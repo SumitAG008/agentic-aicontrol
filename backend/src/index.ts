@@ -6,6 +6,8 @@ import { agentRoutes } from './routes/agents';
 import { toolRoutes } from './routes/tools';
 import { runRoutes } from './routes/runs';
 import { tenantRoutes } from './routes/tenants';
+import { authRoutes } from './routes/auth';
+import { dashboardRoutes } from './routes/dashboard';
 
 dotenv.config();
 
@@ -41,8 +43,11 @@ app.get('/health', (req, res) => {
 app.get('/api', (req, res) => {
   res.json({
     name: 'AI Control Room API',
-    version: '0.1.0',
+    version: '0.2.0',
+    database: 'PostgreSQL',
     endpoints: {
+      auth: '/api/auth',
+      dashboard: '/api/dashboard',
       agents: '/api/agents',
       tools: '/api/tools',
       runs: '/api/runs',
@@ -52,6 +57,8 @@ app.get('/api', (req, res) => {
 });
 
 // API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/tools', toolRoutes);
 app.use('/api/runs', runRoutes);
@@ -69,12 +76,33 @@ app.use('/.well-known/*', (req, res) => {
 
 // Error handling middleware
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Internal Server Error' });
+  console.error('Error:', err.message);
+  if (isDev) {
+    console.error(err.stack);
+  }
+
+  // Handle Prisma errors
+  if (err.name === 'PrismaClientKnownRequestError') {
+    return res.status(400).json({
+      error: {
+        code: 'DATABASE_ERROR',
+        message: 'Database operation failed',
+      },
+    });
+  }
+
+  res.status(500).json({
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: isDev ? err.message : 'Internal Server Error',
+    },
+  });
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 AI Control Room API running on http://localhost:${PORT}`);
   console.log(`📚 API docs: http://localhost:${PORT}/api`);
   console.log(`❤️  Health: http://localhost:${PORT}/health`);
+  console.log(`🔐 Auth: http://localhost:${PORT}/api/auth`);
+  console.log(`📊 Dashboard: http://localhost:${PORT}/api/dashboard`);
 });

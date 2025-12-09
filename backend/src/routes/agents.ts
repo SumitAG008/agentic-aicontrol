@@ -1,119 +1,214 @@
+// Agent Routes - Full CRUD with real database
 import { Router } from 'express';
+import { agentService } from '../services';
+import { authenticate, mockAuth } from '../middleware/auth';
+import { validateBody, validateQuery, validateParams } from '../middleware/validate';
+import {
+  CreateAgentSchema,
+  UpdateAgentSchema,
+  AgentFiltersSchema,
+  IdParamSchema,
+} from '../lib/validators';
 
 const router = Router();
 
-// Mock data for development
-const mockAgents = [
-  {
-    id: '1',
-    name: 'HR Assistant',
-    description: 'Handles employee inquiries and HR documentation',
-    status: 'running',
-    domainPackId: 'hr-crm',
-    tenantId: 'tenant-1',
-    configuration: {
-      model: 'claude-3-sonnet',
-      temperature: 0.7,
-      maxTokens: 4096,
-    },
-    metrics: {
-      totalRuns: 1247,
-      successRate: 98.5,
-      avgExecutionTime: 2340,
-      lastRunAt: new Date().toISOString(),
-    },
-    createdAt: new Date('2024-01-15').toISOString(),
-    updatedAt: new Date().toISOString(),
-  },
-];
+// Use mock auth in development for easy testing
+if (process.env.NODE_ENV === 'development') {
+  router.use(mockAuth);
+}
 
-// GET /api/agents - List all agents
-router.get('/', (req, res) => {
-  const { status, domainPackId } = req.query;
-  let agents = [...mockAgents];
+// All routes require authentication
+router.use(authenticate);
 
-  if (status) {
-    agents = agents.filter(a => a.status === status);
+// GET /api/agents - List all agents with filters
+router.get('/', validateQuery(AgentFiltersSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const result = await agentService.list(req.context, req.query as any);
+    res.json(result);
+  } catch (error) {
+    next(error);
   }
-  if (domainPackId) {
-    agents = agents.filter(a => a.domainPackId === domainPackId);
-  }
+});
 
-  res.json({ agents, total: agents.length });
+// GET /api/agents/status-counts - Get agent counts by status
+router.get('/status-counts', async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const counts = await agentService.getStatusCounts(req.context);
+    res.json(counts);
+  } catch (error) {
+    next(error);
+  }
 });
 
 // GET /api/agents/:id - Get single agent
-router.get('/:id', (req, res) => {
-  const agent = mockAgents.find(a => a.id === req.params.id);
-  if (!agent) {
-    return res.status(404).json({ error: 'Agent not found' });
+router.get('/:id', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const agent = await agentService.getById(req.context, req.params.id);
+
+    if (!agent) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Agent not found',
+        },
+      });
+    }
+
+    res.json(agent);
+  } catch (error) {
+    next(error);
   }
-  res.json(agent);
 });
 
-// POST /api/agents - Create agent
-router.post('/', (req, res) => {
-  const newAgent = {
-    id: String(mockAgents.length + 1),
-    ...req.body,
-    status: 'idle',
-    metrics: {
-      totalRuns: 0,
-      successRate: 0,
-      avgExecutionTime: 0,
-      lastRunAt: null,
-    },
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  mockAgents.push(newAgent);
-  res.status(201).json(newAgent);
+// POST /api/agents - Create new agent
+router.post('/', validateBody(CreateAgentSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const agent = await agentService.create(req.context, req.body);
+    res.status(201).json(agent);
+  } catch (error) {
+    next(error);
+  }
 });
 
 // PUT /api/agents/:id - Update agent
-router.put('/:id', (req, res) => {
-  const index = mockAgents.findIndex(a => a.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Agent not found' });
+router.put(
+  '/:id',
+  validateParams(IdParamSchema),
+  validateBody(UpdateAgentSchema),
+  async (req, res, next) => {
+    try {
+      if (!req.context) {
+        return res.status(401).json({ error: 'Authentication required' });
+      }
+
+      const agent = await agentService.update(req.context, req.params.id, req.body);
+
+      if (!agent) {
+        return res.status(404).json({
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Agent not found',
+          },
+        });
+      }
+
+      res.json(agent);
+    } catch (error) {
+      next(error);
+    }
   }
-  mockAgents[index] = {
-    ...mockAgents[index],
-    ...req.body,
-    updatedAt: new Date().toISOString(),
-  };
-  res.json(mockAgents[index]);
-});
+);
 
 // DELETE /api/agents/:id - Delete agent
-router.delete('/:id', (req, res) => {
-  const index = mockAgents.findIndex(a => a.id === req.params.id);
-  if (index === -1) {
-    return res.status(404).json({ error: 'Agent not found' });
+router.delete('/:id', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const deleted = await agentService.delete(req.context, req.params.id);
+
+    if (!deleted) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Agent not found',
+        },
+      });
+    }
+
+    res.status(204).send();
+  } catch (error) {
+    next(error);
   }
-  mockAgents.splice(index, 1);
-  res.status(204).send();
 });
 
 // POST /api/agents/:id/start - Start agent
-router.post('/:id/start', (req, res) => {
-  const agent = mockAgents.find(a => a.id === req.params.id);
-  if (!agent) {
-    return res.status(404).json({ error: 'Agent not found' });
+router.post('/:id/start', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const agent = await agentService.start(req.context, req.params.id);
+
+    if (!agent) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Agent not found',
+        },
+      });
+    }
+
+    res.json(agent);
+  } catch (error) {
+    next(error);
   }
-  agent.status = 'running';
-  agent.updatedAt = new Date().toISOString();
-  res.json(agent);
 });
 
 // POST /api/agents/:id/stop - Stop agent
-router.post('/:id/stop', (req, res) => {
-  const agent = mockAgents.find(a => a.id === req.params.id);
-  if (!agent) {
-    return res.status(404).json({ error: 'Agent not found' });
+router.post('/:id/stop', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const agent = await agentService.stop(req.context, req.params.id);
+
+    if (!agent) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Agent not found',
+        },
+      });
+    }
+
+    res.json(agent);
+  } catch (error) {
+    next(error);
   }
-  agent.status = 'idle';
-  agent.updatedAt = new Date().toISOString();
-  res.json(agent);
+});
+
+// POST /api/agents/:id/pause - Pause agent
+router.post('/:id/pause', validateParams(IdParamSchema), async (req, res, next) => {
+  try {
+    if (!req.context) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
+    const agent = await agentService.pause(req.context, req.params.id);
+
+    if (!agent) {
+      return res.status(404).json({
+        error: {
+          code: 'NOT_FOUND',
+          message: 'Agent not found',
+        },
+      });
+    }
+
+    res.json(agent);
+  } catch (error) {
+    next(error);
+  }
 });
 
 export { router as agentRoutes };

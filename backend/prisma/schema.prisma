@@ -1,138 +1,643 @@
 // Prisma schema for AI Control Room
-// Supports: SQLite (default), PostgreSQL, MySQL
+// PostgreSQL-optimized schema with proper relations, indexes, and JSON types
 
 generator client {
   provider = "prisma-client-js"
 }
 
-// DEFAULT: SQLite (zero config, perfect for local dev)
-// To use PostgreSQL or MySQL, change the provider and DATABASE_URL
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
+
+// ============================================================================
+// MULTI-TENANT CORE
+// ============================================================================
 
 model Tenant {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
   logo      String?
-  plan      String   @default("starter")
-  settings  String   @default("{}") // JSON stored as string for SQLite
-  limits    String   @default("{}")
+
+  // Subscription & Billing
+  plan      TenantPlan @default(STARTER)
+  stripeCustomerId String? @unique
+  subscriptionId   String?
+  trialEndsAt      DateTime?
+
+  // Configuration
+  settings  Json     @default("{}")  // theme, timezone, language, notifications
+  limits    Json     @default("{}")  // maxAgents, maxUsers, maxExecutionsPerMonth, storageGB
+
+  // Metadata
+  industry  String?  // hrtech, healthcare, finance, legal, etc.
+  size      String?  // small, medium, enterprise
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users  User[]
-  agents Agent[]
-  runs   AgentRun[]
+  // Relations
+  users       User[]
+  agents      Agent[]
+  runs        AgentRun[]
+  auditLogs   AuditLog[]
+  apiKeys     ApiKey[]
+  toolConfigs TenantToolConfig[]
+  webhooks    Webhook[]
+
+  @@index([plan])
+  @@index([industry])
 }
+
+enum TenantPlan {
+  STARTER      // Free tier: 3 agents, 100 runs/month
+  PROFESSIONAL // $99/mo: 25 agents, 5000 runs/month
+  ENTERPRISE   // Custom: Unlimited
+}
+
+// ============================================================================
+// USER & AUTHENTICATION
+// ============================================================================
 
 model User {
-  id         String   @id @default(cuid())
-  email      String   @unique
-  name       String
-  avatar     String?
-  role       String   @default("viewer")
-  tenantId   String
-  tenant     Tenant   @relation(fields: [tenantId], references: [id])
-  lastLogin  DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String?   // null for OAuth users
+  name          String
+  avatar        String?
 
+  // Role & Permissions
+  role          UserRole  @default(VIEWER)
+  permissions   String[]  @default([])
+
+  // Tenant Association
+  tenantId      String
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // OAuth (future)
+  provider      String?   // google, microsoft, saml
+  providerId    String?
+
+  // Activity
+  lastLoginAt   DateTime?
+  lastLoginIp   String?
+  isActive      Boolean   @default(true)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  createdAgents Agent[]   @relation("AgentCreator")
+  auditLogs     AuditLog[]
+
+  @@unique([provider, providerId])
   @@index([tenantId])
+  @@index([email])
+  @@index([role])
 }
 
+enum UserRole {
+  OWNER      // Full access, can delete tenant
+  ADMIN      // Full access except tenant deletion
+  DEVELOPER  // Can create/edit agents and tools
+  VIEWER     // Read-only access
+}
+
+model ApiKey {
+  id          String    @id @default(cuid())
+  name        String
+  keyHash     String    @unique  // bcrypt hash of the key
+  keyPrefix   String    // First 8 chars for identification (e.g., "sk_live_")
+
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Permissions & Limits
+  scopes      String[]  @default(["read"])  // read, write, admin
+  rateLimit   Int       @default(1000)      // requests per hour
+
+  // Usage Tracking
+  lastUsedAt  DateTime?
+  usageCount  Int       @default(0)
+
+  // Lifecycle
+  expiresAt   DateTime?
+  isActive    Boolean   @default(true)
+
+  createdAt   DateTime  @default(now())
+
+  @@index([tenantId])
+  @@index([keyPrefix])
+}
+
+// ============================================================================
+// AI AGENTS
+// ============================================================================
+
 model Agent {
-  id            String   @id @default(cuid())
+  id            String      @id @default(cuid())
   name          String
   description   String?
   avatar        String?
-  status        String   @default("idle")
-  domainPackId  String?
-  tenantId      String
-  tenant        Tenant   @relation(fields: [tenantId], references: [id])
-  configuration String   @default("{}")
-  schedule      String   @default("{}")
-  metrics       String   @default("{}")
-  permissions   String   @default("[]")
-  createdBy     String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
 
-  runs AgentRun[]
+  // Status & Lifecycle
+  status        AgentStatus @default(IDLE)
+
+  // Domain & Template
+  domainPackId  String?
+  domainPack    DomainPack? @relation(fields: [domainPackId], references: [id])
+
+  // Tenant Association
+  tenantId      String
+  tenant        Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // AI Configuration
+  configuration Json        @default("{}")
+  // {
+  //   model: "claude-3-sonnet" | "claude-3-opus" | "claude-3-haiku",
+  //   temperature: 0.7,
+  //   maxTokens: 4096,
+  //   systemPrompt: "...",
+  //   tools: ["tool-id-1", "tool-id-2"],
+  //   memory: "none" | "short-term" | "long-term",
+  //   autonomyLevel: "supervised" | "semi-autonomous" | "autonomous"
+  // }
+
+  // Scheduling
+  schedule      Json        @default("{}")
+  // {
+  //   enabled: false,
+  //   cron: "0 9 * * 1-5",
+  //   timezone: "America/New_York"
+  // }
+
+  // Aggregated Metrics (updated by triggers/jobs)
+  metrics       Json        @default("{}")
+  // {
+  //   totalRuns: 0,
+  //   successRate: 0,
+  //   avgExecutionTime: 0,
+  //   lastRunAt: null,
+  //   tokensUsed: 0,
+  //   costTotal: 0
+  // }
+
+  // HR/CRM Specific Fields
+  hrConfig      Json?       // HR-specific configuration
+  // {
+  //   candidateSourcing: true,
+  //   resumeScreening: true,
+  //   employeeOnboarding: true,
+  //   policyQA: true,
+  //   integrations: ["greenhouse", "lever", "workday"]
+  // }
+
+  // Ownership
+  createdById   String?
+  createdBy     User?       @relation("AgentCreator", fields: [createdById], references: [id])
+
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  // Relations
+  runs          AgentRun[]
+  toolBindings  AgentToolBinding[]
 
   @@index([tenantId])
   @@index([status])
+  @@index([domainPackId])
+  @@index([createdAt])
 }
+
+enum AgentStatus {
+  IDLE        // Ready to run
+  RUNNING     // Currently executing
+  PAUSED      // Temporarily stopped
+  ERROR       // Failed, needs attention
+  TERMINATED  // Permanently stopped
+  CONFIGURING // Being set up
+}
+
+// Agent-Tool many-to-many with configuration
+model AgentToolBinding {
+  id        String   @id @default(cuid())
+
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  toolId    String
+  tool      Tool     @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  // Per-agent tool configuration
+  config    Json     @default("{}")  // Agent-specific tool settings
+  isEnabled Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+
+  @@unique([agentId, toolId])
+  @@index([agentId])
+  @@index([toolId])
+}
+
+// ============================================================================
+// TOOLS & INTEGRATIONS
+// ============================================================================
 
 model Tool {
-  id             String   @id @default(cuid())
-  name           String
-  slug           String   @unique
-  description    String?
-  icon           String?
-  category       String
-  provider       String?
-  version        String   @default("1.0.0")
-  schema         String   @default("{}")
-  authentication String   @default("{}")
-  rateLimit      String   @default("{}")
-  status         String   @default("active")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String       @id @default(cuid())
+  name          String
+  slug          String       @unique
+  description   String?
+  icon          String?
+
+  // Categorization
+  category      ToolCategory
+  provider      String?      // Company that provides the tool
+
+  // Schema Definition (JSON Schema)
+  inputSchema   Json         @default("{}")  // Expected inputs
+  outputSchema  Json         @default("{}")  // Expected outputs
+
+  // Authentication Template
+  authType      AuthType     @default(NONE)
+  authSchema    Json         @default("{}")  // What credentials are needed
+
+  // Rate Limiting Defaults
+  rateLimit     Json         @default("{}")
+  // { requests: 100, window: 60 }  // 100 requests per 60 seconds
+
+  // Metadata
+  version       String       @default("1.0.0")
+  status        ToolStatus   @default(ACTIVE)
+  isBuiltIn     Boolean      @default(false)  // System-provided vs custom
+  documentation String?      // URL to docs
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Relations
+  agentBindings  AgentToolBinding[]
+  tenantConfigs  TenantToolConfig[]
+
+  @@index([category])
+  @@index([status])
 }
 
-model DomainPack {
+enum ToolCategory {
+  COMMUNICATION  // Slack, Email, Teams
+  DATA          // Database, Sheets, Notion
+  ANALYTICS     // Reporting, BI tools
+  INTEGRATION   // Webhooks, APIs
+  HRTECH        // ATS, HRIS, Payroll
+  PRODUCTIVITY  // Calendar, Tasks
+  AI            // LLM, Embedding services
+  CUSTOM        // User-defined
+}
+
+enum AuthType {
+  NONE          // No auth required
+  API_KEY       // Simple API key
+  OAUTH2        // OAuth 2.0 flow
+  BASIC         // Username/password
+  BEARER        // Bearer token
+  CUSTOM        // Custom auth scheme
+}
+
+enum ToolStatus {
+  ACTIVE        // Available for use
+  INACTIVE      // Temporarily disabled
+  DEPRECATED    // Being phased out
+  BETA          // In testing
+}
+
+// Tenant-specific tool configuration (credentials, settings)
+model TenantToolConfig {
   id          String   @id @default(cuid())
-  name        String
-  slug        String   @unique
-  description String?
-  icon        String?
-  category    String
-  version     String   @default("1.0.0")
-  agents      String   @default("[]")
-  tools       String   @default("[]")
-  status      String   @default("active")
-  metadata    String   @default("{}")
+
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  toolId      String
+  tool        Tool     @relation(fields: [toolId], references: [id], onDelete: Cascade)
+
+  // Encrypted credentials
+  credentials Json     @default("{}")  // Encrypted storage of API keys, tokens, etc.
+
+  // Tenant-specific settings
+  settings    Json     @default("{}")
+
+  // Connection status
+  isConnected Boolean  @default(false)
+  lastTestedAt DateTime?
+  lastError    String?
+
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, toolId])
+  @@index([tenantId])
+  @@index([toolId])
 }
 
+// ============================================================================
+// DOMAIN PACKS (Pre-configured Agent Templates)
+// ============================================================================
+
+model DomainPack {
+  id          String           @id @default(cuid())
+  name        String
+  slug        String           @unique
+  description String?
+  icon        String?
+
+  // Categorization
+  category    DomainCategory
+  industry    String?          // More specific: "recruiting", "payroll", etc.
+
+  // Content
+  version     String           @default("1.0.0")
+
+  // Template Definitions
+  agentTemplates Json          @default("[]")  // Array of agent configurations
+  // [{
+  //   name: "Resume Screener",
+  //   description: "Automatically screens resumes...",
+  //   configuration: { model: "claude-3-sonnet", ... },
+  //   tools: ["greenhouse", "lever"]
+  // }]
+
+  toolSuggestions String[]     @default([])    // Recommended tool slugs
+
+  // Metadata
+  author      String           @default("system")
+  status      DomainPackStatus @default(ACTIVE)
+  isOfficial  Boolean          @default(false)
+  downloads   Int              @default(0)
+  rating      Float?
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  // Relations
+  agents      Agent[]
+
+  @@index([category])
+  @@index([status])
+  @@index([isOfficial])
+}
+
+enum DomainCategory {
+  HR_CRM         // HR, Recruiting, CRM
+  HEALTHCARE     // Clinical, Patient management
+  LIFE_SCIENCES  // Research, Pharma
+  FINANCE        // Accounting, Banking
+  LEGAL          // Contract, Compliance
+  MARKETING      // Content, Analytics
+  OPERATIONS     // Workflow, Automation
+  CUSTOM         // User-created
+}
+
+enum DomainPackStatus {
+  ACTIVE
+  BETA
+  DEPRECATED
+  DRAFT
+}
+
+// ============================================================================
+// AGENT EXECUTION & RUNS
+// ============================================================================
+
 model AgentRun {
-  id        String   @id @default(cuid())
-  agentId   String
-  agent     Agent    @relation(fields: [agentId], references: [id])
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  status    String   @default("pending")
-  trigger   String   @default("manual")
-  input     String   @default("{}")
-  output    String?
-  steps     String   @default("[]")
-  error     String?
-  metrics   String   @default("{}")
-  createdAt DateTime @default(now())
+  id          String        @id @default(cuid())
+
+  // Associations
+  agentId     String
+  agent       Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  tenantId    String
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  // Execution Status
+  status      RunStatus     @default(PENDING)
+  trigger     RunTrigger    @default(MANUAL)
+
+  // Input/Output
+  input       Json          @default("{}")   // What was sent to the agent
+  output      Json?                          // Final result
+
+  // Error Information
+  error       Json?
+  // {
+  //   code: "TOOL_ERROR",
+  //   message: "Failed to connect to Slack",
+  //   stack: "...",
+  //   toolId: "tool-123"
+  // }
+
+  // Timing
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  // Metrics
+  metrics     Json          @default("{}")
+  // {
+  //   duration: 2340,        // ms
+  //   tokensUsed: 1523,
+  //   toolCalls: 5,
+  //   cost: 0.0234,          // USD
+  //   retries: 0
+  // }
+
+  // Parent run (for sub-agent calls)
+  parentRunId String?
+  parentRun   AgentRun?     @relation("SubRuns", fields: [parentRunId], references: [id])
+  subRuns     AgentRun[]    @relation("SubRuns")
+
+  createdAt   DateTime      @default(now())
+
+  // Relations
+  steps       ExecutionStep[]
 
   @@index([agentId])
   @@index([tenantId])
   @@index([status])
+  @@index([trigger])
   @@index([createdAt])
+  @@index([parentRunId])
 }
 
+enum RunStatus {
+  PENDING     // Queued
+  RUNNING     // In progress
+  COMPLETED   // Success
+  FAILED      // Error occurred
+  CANCELLED   // User cancelled
+  TIMEOUT     // Exceeded time limit
+}
+
+enum RunTrigger {
+  MANUAL      // User initiated
+  SCHEDULED   // Cron job
+  WEBHOOK     // External trigger
+  EVENT       // System event
+  API         // API call
+}
+
+// Detailed execution steps within a run
+model ExecutionStep {
+  id          String        @id @default(cuid())
+
+  runId       String
+  run         AgentRun      @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  // Ordering
+  sequence    Int
+
+  // Step Details
+  type        StepType
+  content     String        // The actual content (thought, message, etc.)
+
+  // Tool-specific
+  toolId      String?
+  toolInput   Json?
+  toolOutput  Json?
+
+  // Timing
+  duration    Int?          // milliseconds
+
+  // Metadata
+  metadata    Json          @default("{}")
+
+  createdAt   DateTime      @default(now())
+
+  @@index([runId])
+  @@index([sequence])
+  @@index([type])
+}
+
+enum StepType {
+  THOUGHT     // Agent reasoning
+  TOOL_CALL   // Calling a tool
+  TOOL_RESULT // Tool response
+  MESSAGE     // Output message
+  DECISION    // Branching decision
+  ERROR       // Error occurred
+}
+
+// ============================================================================
+// WEBHOOKS & EVENTS
+// ============================================================================
+
+model Webhook {
+  id          String        @id @default(cuid())
+
+  tenantId    String
+  tenant      Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  name        String
+  url         String
+  secret      String?       // For signature verification
+
+  // Filtering
+  events      String[]      @default([])  // Which events to trigger on
+  agentIds    String[]      @default([])  // Empty = all agents
+
+  // Status
+  isActive    Boolean       @default(true)
+  lastTriggeredAt DateTime?
+  failureCount Int          @default(0)
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([tenantId])
+  @@index([isActive])
+}
+
+// ============================================================================
+// AUDIT & COMPLIANCE
+// ============================================================================
+
 model AuditLog {
-  id         String   @id @default(cuid())
-  tenantId   String
-  userId     String
-  action     String
-  resource   String
-  resourceId String
-  changes    String   @default("{}")
-  ip         String?
-  userAgent  String?
-  timestamp  DateTime @default(now())
+  id          String    @id @default(cuid())
+
+  tenantId    String
+  tenant      Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+
+  // Action Details
+  action      String    // CREATE, UPDATE, DELETE, START, STOP, LOGIN, etc.
+  resource    String    // agent, tool, user, run, etc.
+  resourceId  String?
+
+  // Change Tracking
+  changes     Json      @default("{}")
+  // { before: {...}, after: {...} }
+
+  // Context
+  ip          String?
+  userAgent   String?
+  apiKeyId    String?   // If action was via API key
+
+  // Severity for filtering
+  severity    AuditSeverity @default(INFO)
+
+  timestamp   DateTime  @default(now())
 
   @@index([tenantId])
   @@index([userId])
+  @@index([action])
+  @@index([resource])
   @@index([timestamp])
+  @@index([severity])
+}
+
+enum AuditSeverity {
+  DEBUG
+  INFO
+  WARNING
+  ERROR
+  CRITICAL
+}
+
+// ============================================================================
+// ANALYTICS & METRICS (Aggregated Data)
+// ============================================================================
+
+model DailyMetrics {
+  id          String    @id @default(cuid())
+
+  tenantId    String
+  agentId     String?   // null = tenant-wide metrics
+
+  date        DateTime  @db.Date
+
+  // Run Metrics
+  totalRuns       Int   @default(0)
+  successfulRuns  Int   @default(0)
+  failedRuns      Int   @default(0)
+
+  // Time Metrics (in milliseconds)
+  totalDuration   Int   @default(0)
+  avgDuration     Int   @default(0)
+
+  // Token Metrics
+  totalTokens     Int   @default(0)
+
+  // Cost Metrics (in cents)
+  totalCost       Int   @default(0)
+
+  // Tool Usage
+  toolCalls       Int   @default(0)
+
+  createdAt   DateTime  @default(now())
+
+  @@unique([tenantId, agentId, date])
+  @@index([tenantId])
+  @@index([agentId])
+  @@index([date])
 }
