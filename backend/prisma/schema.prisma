@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -614,7 +614,7 @@ model DailyMetrics {
   tenantId    String
   agentId     String?   // null = tenant-wide metrics
 
-  date        DateTime
+  date        DateTime  @db.Date
 
   // Run Metrics
   totalRuns       Int   @default(0)
