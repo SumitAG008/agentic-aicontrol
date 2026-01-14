@@ -6,6 +6,7 @@ import { agentRoutes } from './routes/agents';
 import { toolRoutes } from './routes/tools';
 import { runRoutes } from './routes/runs';
 import { tenantRoutes } from './routes/tenants';
+import compensationRoutes from './routes/compensation';
 
 dotenv.config();
 
@@ -47,6 +48,7 @@ app.get('/api', (req, res) => {
       tools: '/api/tools',
       runs: '/api/runs',
       tenants: '/api/tenants',
+      compensation: '/api/compensation',
     },
   });
 });
@@ -56,6 +58,7 @@ app.use('/api/agents', agentRoutes);
 app.use('/api/tools', toolRoutes);
 app.use('/api/runs', runRoutes);
 app.use('/api/tenants', tenantRoutes);
+app.use('/api/compensation', compensationRoutes);
 
 // 404 handler for API routes
 app.use('/api/*', (req, res) => {
