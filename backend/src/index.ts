@@ -7,6 +7,7 @@ import { toolRoutes } from './routes/tools';
 import { runRoutes } from './routes/runs';
 import { tenantRoutes } from './routes/tenants';
 import compensationRoutes from './routes/compensation';
+import authRoutes from './routes/auth';
 
 dotenv.config();
 
@@ -41,9 +42,10 @@ app.get('/health', (req, res) => {
 // API info
 app.get('/api', (req, res) => {
   res.json({
-    name: 'AI Control Room API',
+    name: 'meldra API',
     version: '0.1.0',
     endpoints: {
+      auth: '/api/auth',
       agents: '/api/agents',
       tools: '/api/tools',
       runs: '/api/runs',
@@ -54,6 +56,7 @@ app.get('/api', (req, res) => {
 });
 
 // API Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/tools', toolRoutes);
 app.use('/api/runs', runRoutes);
